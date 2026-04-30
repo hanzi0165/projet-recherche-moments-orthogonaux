@@ -1,0 +1,130 @@
+from PIL import Image
+import numpy as np
+from pathlib import Path
+import os
+from sklearn.model_selection import train_test_split
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+
+from moments_2d import chebyshev_moments_2d
+
+
+def resolve_dataset_root() -> Path:
+    env_dir = os.environ.get("MPEG7_ORIGINAL_DIR")
+
+    if "__file__" in globals():
+        script_dir = Path(__file__).resolve().parent
+    else:
+        script_dir = Path.cwd()
+
+    project_root = script_dir.parent
+    candidates = []
+
+    if env_dir:
+        candidates.append(Path(env_dir))
+
+    candidates.extend([
+        project_root / "MPEG7dataset" / "original",
+        project_root / "data" / "MPEG7dataset" / "original",
+        Path.home() / "Downloads" / "MPEG7dataset" / "original",
+    ])
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    candidate_text = "\n".join(f"- {str(c)}" for c in candidates)
+    raise FileNotFoundError(
+        "Impossible de trouver le dossier MPEG-7 'original'.\n"
+        "Définissez MPEG7_ORIGINAL_DIR ou placez les données dans l'un des chemins suivants:\n"
+        f"{candidate_text}"
+    )
+
+
+def load_binary_image(path):
+    img_pil = Image.open(path).convert("L")
+    arr = np.array(img_pil, dtype=np.float64)
+    return (arr > 127).astype(np.float64)
+
+
+def extract_label(path: Path):
+    return path.stem.split("-")[0].lower()
+
+
+def build_dataset(root_dir, n_max=20, max_per_class=None, selected_labels=None):
+    root = Path(root_dir)
+    files = sorted(root.glob("*.gif"))
+
+    class_counts = {}
+    X = []
+    y = []
+
+    for f in files:
+        label = extract_label(f)
+
+        if selected_labels is not None and label not in selected_labels:
+            continue
+
+        if max_per_class is not None:
+            cnt = class_counts.get(label, 0)
+            if cnt >= max_per_class:
+                continue
+            class_counts[label] = cnt + 1
+
+        img = load_binary_image(f)
+        M, _, _ = chebyshev_moments_2d(img, n_max)
+        feat = M.flatten()
+
+        X.append(feat)
+        y.append(label)
+
+    return np.array(X), np.array(y)
+
+
+root_dir = resolve_dataset_root()
+
+# 可改：只做这三类
+selected_labels = {"apple", "heart", "dog"}
+
+# 可改：Chebyshev 最大阶数
+n_max = 20
+
+# 可改：每类最多取多少张
+max_per_class = 10
+
+X, y = build_dataset(
+    root_dir,
+    n_max=n_max,
+    max_per_class=max_per_class,
+    selected_labels=selected_labels
+)
+
+print("Dataset shape:", X.shape)
+print("Labels:", sorted(set(y)))
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+
+# ===== kNN =====
+knn = KNeighborsClassifier(n_neighbors=3)
+knn.fit(X_train, y_train)
+pred_knn = knn.predict(X_test)
+
+print("=== kNN ===")
+print("Accuracy:", accuracy_score(y_test, pred_knn))
+print(classification_report(y_test, pred_knn))
+print("Confusion matrix:")
+print(confusion_matrix(y_test, pred_knn, labels=sorted(set(y))))
+
+# ===== SVM =====
+svm = SVC(kernel="rbf")
+svm.fit(X_train, y_train)
+pred_svm = svm.predict(X_test)
+
+print("=== SVM ===")
+print("Accuracy:", accuracy_score(y_test, pred_svm))
+print(classification_report(y_test, pred_svm))
+print("Confusion matrix:")
+print(confusion_matrix(y_test, pred_svm, labels=sorted(set(y))))

@@ -1,0 +1,87 @@
+from PIL import Image
+import numpy as np
+import matplotlib.pyplot as plt
+
+from moments_2d import chebyshev_moments_2d
+from reconstruction import reconstruct_2d
+from metrics import mse, psnr
+
+path = r"C:\Users\Flora\Downloads\MPEG7dataset\original\teddy-03.gif"
+
+# 1. 读取原图
+img_pil = Image.open(path).convert("L")
+arr = np.array(img_pil, dtype=np.float64)
+
+# 新增：查看图像尺寸
+print("PIL size (width, height):", img_pil.size)
+print("NumPy shape (height, width):", arr.shape)
+
+# 2. 二值化
+img = (arr > 127).astype(np.float64)
+
+# 3. 选择多个 N
+n_values = [5, 10, 20, 30, 40, 50, 60]
+
+# 4. 打印每个 N 的指标
+print("Image shape:", img.shape)
+print("Unique values:", np.unique(img))
+print()
+
+results = []
+mse_values = []
+psnr_values = []
+
+for n_max in n_values:
+    M, Tx, Ty = chebyshev_moments_2d(img, n_max)
+    rec = reconstruct_2d(M, Tx, Ty)
+
+    m = mse(img, rec)
+    p = psnr(img, rec)
+
+    results.append((n_max, rec, m, p))
+    mse_values.append(m)
+    psnr_values.append(p)
+
+    print(f"N = {n_max}")
+    print("  Moment shape:", M.shape)
+    print("  MSE:", m)
+    print("  PSNR:", p)
+    print()
+
+# 5. 原图 + 重建图
+num_plots = 1 + len(n_values)
+plt.figure(figsize=(4 * num_plots, 4))
+
+plt.subplot(1, num_plots, 1)
+plt.imshow(img, cmap="gray")
+plt.title("Original")
+plt.axis("off")
+
+for idx, (n_max, rec, m, p) in enumerate(results, start=2):
+    plt.subplot(1, num_plots, idx)
+    plt.imshow(rec, cmap="gray")
+    plt.title(f"N={n_max}\nMSE={m:.2e}\nPSNR={p:.2f}")
+    plt.axis("off")
+
+plt.tight_layout()
+plt.show()
+
+# 6. MSE 曲线
+plt.figure(figsize=(6, 4))
+plt.semilogy(n_values, mse_values, marker='o')
+plt.xlabel("N")
+plt.ylabel("MSE")
+plt.title("MSE vs Reconstruction Order")
+plt.grid(True, which="both")
+plt.tight_layout()
+plt.show()
+
+# 7. PSNR 曲线
+plt.figure(figsize=(6, 4))
+plt.plot(n_values, psnr_values, marker='o')
+plt.xlabel("N")
+plt.ylabel("PSNR")
+plt.title("PSNR vs Reconstruction Order")
+plt.grid(True)
+plt.tight_layout()
+plt.show()

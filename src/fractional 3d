@@ -1,0 +1,49 @@
+import numpy as np
+
+
+def normalized_coords_01(length: int):
+    delta = 1.0 / length
+    idx = np.arange(length, dtype=np.float64)
+    coords = idx / length + delta / 2.0
+    return coords, delta
+
+
+def fractional_chebyshev_basis_1d(n_max: int, coords: np.ndarray, alpha: float):
+    """
+    第一版先放一个接口骨架。
+    你后面要把这里替换成论文对应的 FeTe^alpha_n(x)。
+    现在先给一个占位近似：用 coords**alpha 做变量变换后再套普通 Chebyshev 递推。
+    这不是严格论文公式，但方便你先把 3D fractional pipeline 跑通。
+    """
+    x = np.power(coords, alpha)
+
+    T = np.zeros((n_max + 1, len(x)), dtype=np.float64)
+    T[0] = 1.0
+    if n_max >= 1:
+        T[1] = x
+
+    for n in range(1, n_max):
+        T[n + 1] = 2.0 * x * T[n] - T[n - 1]
+
+    return T
+
+
+def frcm_3d(vol, n_max, alpha_x=1.0, alpha_y=1.0, alpha_z=1.0):
+    """
+    Fractional-order Chebyshev moments 3D - 骨架版
+    vol shape: (H, W, D)
+    """
+    H, W, D = vol.shape
+
+    x, dx = normalized_coords_01(W)
+    y, dy = normalized_coords_01(H)
+    z, dz = normalized_coords_01(D)
+
+    Tx = fractional_chebyshev_basis_1d(n_max, x, alpha_x)   # (n+1, W)
+    Ty = fractional_chebyshev_basis_1d(n_max, y, alpha_y)   # (n+1, H)
+    Tz = fractional_chebyshev_basis_1d(n_max, z, alpha_z)   # (n+1, D)
+
+    M = np.einsum('ijk,qi,pj,rk->qpr', vol, Ty, Tx, Tz)
+    M = M * dx * dy * dz
+
+    return M, Tx, Ty, Tz
