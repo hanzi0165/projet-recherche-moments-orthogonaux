@@ -1,6 +1,8 @@
 from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
+import os
+from datetime import datetime
 
 from moments_2d import chebyshev_moments_2d
 from reconstruction import reconstruct_2d
@@ -15,6 +17,11 @@ arr = np.array(img_pil, dtype=np.float64)
 # 新增：查看图像尺寸
 print("PIL size (width, height):", img_pil.size)
 print("NumPy shape (height, width):", arr.shape)
+
+# 准备输出目录与时间戳
+out_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'outputs'))
+os.makedirs(out_dir, exist_ok=True)
+ts = datetime.now().strftime('%Y%m%d_%H%M%S')
 
 # 2. 二值化
 img = (arr > 127).astype(np.float64)
@@ -50,7 +57,7 @@ for n_max in n_values:
 
 # 5. 原图 + 重建图
 num_plots = 1 + len(n_values)
-plt.figure(figsize=(4 * num_plots, 4))
+fig = plt.figure(figsize=(4 * num_plots, 4))
 
 plt.subplot(1, num_plots, 1)
 plt.imshow(img, cmap="gray")
@@ -64,24 +71,40 @@ for idx, (n_max, rec, m, p) in enumerate(results, start=2):
     plt.axis("off")
 
 plt.tight_layout()
-plt.show()
+fig_path = os.path.join(out_dir, f'MPEG7_recon_{ts}.png')
+fig.savefig(fig_path, dpi=300, bbox_inches='tight')
+plt.close(fig)
+print('Saved reconstruction figure to', fig_path)
 
-# 6. MSE 曲线
-plt.figure(figsize=(6, 4))
+# 6. Courbe MSE
+fig = plt.figure(figsize=(6, 4))
 plt.semilogy(n_values, mse_values, marker='o')
 plt.xlabel("N")
 plt.ylabel("MSE")
 plt.title("MSE vs Reconstruction Order")
 plt.grid(True, which="both")
-plt.tight_layout()
-plt.show()
+
+# Afficher les valeurs MSE exactes sur l'axe Y
+plt.yticks(mse_values, [f"{v:.4f}" for v in mse_values])
+
+# Laisser de la marge en haut et en bas pour éviter la troncature
+plt.ylim([min(mse_values) * 0.8, max(mse_values) * 1.3])
+
+plt.tight_layout(pad=1.5)
+mse_path = os.path.join(out_dir, f'MPEG7_mse_{ts}.png')
+fig.savefig(mse_path, dpi=300, bbox_inches='tight')
+plt.close(fig)
+print('Saved MSE figure to', mse_path)
 
 # 7. PSNR 曲线
-plt.figure(figsize=(6, 4))
+fig = plt.figure(figsize=(6, 4))
 plt.plot(n_values, psnr_values, marker='o')
 plt.xlabel("N")
 plt.ylabel("PSNR")
 plt.title("PSNR vs Reconstruction Order")
 plt.grid(True)
 plt.tight_layout()
-plt.show()
+psnr_path = os.path.join(out_dir, f'MPEG7_psnr_{ts}.png')
+fig.savefig(psnr_path, dpi=300, bbox_inches='tight')
+plt.close(fig)
+print('Saved PSNR figure to', psnr_path)

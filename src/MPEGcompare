@@ -3,85 +3,84 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 from pathlib import Path
+from datetime import datetime
 
 from moments_2d import chebyshev_moments_2d
 from reconstruction import reconstruct_2d
 from metrics import mse, psnr
 
 # =========================================================
-# 1. Choix d'une image par classe, avec niveaux de difficulté variés
+# 0. Répertoire de sortie + horodatage
+# =========================================================
+try:
+    script_dir = Path(__file__).resolve().parent
+except NameError:
+    script_dir = Path.cwd()
+
+out_dir = script_dir.parent / "outputs"
+out_dir.mkdir(parents=True, exist_ok=True)
+ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+# =========================================================
+# 1. Localisation du dataset MPEG-7
 # =========================================================
 def resolve_dataset_root() -> Path:
+    """Cherche le dossier 'original' du dataset MPEG-7."""
     env_dir = os.environ.get("MPEG7_ORIGINAL_DIR")
-
-    if "__file__" in globals():
-        script_dir = Path(__file__).resolve().parent
-    else:
-        script_dir = Path.cwd()
-
     project_root = script_dir.parent
     candidates = []
-
     if env_dir:
         candidates.append(Path(env_dir))
-
     candidates.extend([
         project_root / "MPEG7dataset" / "original",
         project_root / "data" / "MPEG7dataset" / "original",
         Path.home() / "Downloads" / "MPEG7dataset" / "original",
     ])
-
     for candidate in candidates:
         if candidate.exists():
             return candidate
-
-    candidate_text = "\n".join(f"- {str(c)}" for c in candidates)
     raise FileNotFoundError(
-        "Impossible de trouver le dossier MPEG-7 'original'.\n"
-        "Définissez la variable d'environnement MPEG7_ORIGINAL_DIR ou placez les données dans l'un des chemins suivants:\n"
-        f"{candidate_text}"
+        "Dossier MPEG-7 introuvable.\n"
+        "Définissez MPEG7_ORIGINAL_DIR ou placez les données dans :\n"
+        + "\n".join(f"  - {c}" for c in candidates)
     )
 
 
-dataset_root = resolve_dataset_root()
-
-selected_classes = [
-    ("apple", 1),   
-    ("bat", 10),    
-    ("beetle", 20), 
-    ("bottle", 5),
-    ("car", 15),
-    ("dog", 1),
-    ("face", 10),
-    ("fish", 20),
-    ("guitar", 5),
-    ("heart", 15),
-    ("spoon", 1),
-    ("teddy", 10),
-]
-
-
 def find_existing_image(root: Path, class_name: str, sample_no: int) -> Path:
-    """Return the first existing file matching a class/sample number.
-
-    The MPEG-7 dataset mixes one- and two-digit numbering, so we try both.
-    """
-    candidates = [
-        root / f"{class_name}-{sample_no:02d}.gif",
-        root / f"{class_name}-{sample_no}.gif",
-        root / f"{class_name.capitalize()}-{sample_no:02d}.gif",
-        root / f"{class_name.capitalize()}-{sample_no}.gif",
-    ]
-
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-
+    """Cherche un fichier .gif pour une classe et un numéro d'échantillon donnés."""
+    for fmt in [
+        f"{class_name}-{sample_no:02d}.gif",
+        f"{class_name}-{sample_no}.gif",
+        f"{class_name.capitalize()}-{sample_no:02d}.gif",
+        f"{class_name.capitalize()}-{sample_no}.gif",
+    ]:
+        p = root / fmt
+        if p.exists():
+            return p
     raise FileNotFoundError(
         f"Aucun fichier trouvé pour {class_name} (échantillon {sample_no})."
     )
 
 
+dataset_root = resolve_dataset_root()
+
+# Classes sélectionnées avec niveaux de difficulté variés
+selected_classes = [
+    ("apple",  1),
+    ("bat",    10),
+    ("beetle", 20),
+    ("bottle", 5),
+    ("car",    15),
+    ("dog",    1),
+    ("face",   10),
+    ("fish",   20),
+    ("guitar", 5),
+    ("heart",  15),
+    ("spoon",  1),
+    ("teddy",  10),
+]
+
+# Chargement des chemins d'images valides
 image_paths = []
 missing_samples = []
 
@@ -92,12 +91,10 @@ for class_name, sample_no in selected_classes:
         missing_samples.append(f"{class_name}-{sample_no}")
 
 if missing_samples:
-    print("[WARN] Échantillons ignorés:", ", ".join(missing_samples))
+    print("[WARN] Échantillons ignorés :", ", ".join(missing_samples))
 
 if not image_paths:
-    raise FileNotFoundError(
-        f"Aucune image valide n'a été trouvée dans: {dataset_root}"
-    )
+    raise FileNotFoundError(f"Aucune image valide trouvée dans : {dataset_root}")
 
 # =========================================================
 # 2. Valeurs de N à tester
@@ -105,32 +102,22 @@ if not image_paths:
 n_values = [10, 20, 30, 40, 50]
 
 # =========================================================
-# 3. Dictionnaire pour stocker tous les résultats
+# 3. Boucle principale : calcul des moments et reconstruction
 # =========================================================
 all_results = {}
 
-# =========================================================
-# 4. Boucle sur toutes les images
-# =========================================================
 for path in image_paths:
-    # Nom du fichier
     name = path.name
 
-    if not path.exists():
-        print(f"[WARN] Image introuvable, ignorée: {path}")
-        continue
-
-    # Lecture de l'image
+    # Lecture et binarisation
     img_pil = Image.open(path).convert("L")
     arr = np.array(img_pil, dtype=np.float64)
-
-    # Binarisation
     img = (arr > 127).astype(np.float64)
 
     print("=" * 70)
     print("Image :", name)
-    print("PIL size (width, height) :", img_pil.size)
-    print("NumPy shape (height, width) :", img.shape)
+    print("PIL size (largeur, hauteur) :", img_pil.size)
+    print("NumPy shape (hauteur, largeur) :", img.shape)
     print("Valeurs uniques :", np.unique(img))
     print()
 
@@ -138,7 +125,6 @@ for path in image_paths:
     mse_values = []
     psnr_values = []
 
-    # Boucle sur les différents ordres N
     for n_max in n_values:
         M, Tx, Ty = chebyshev_moments_2d(img, n_max)
         rec = reconstruct_2d(M, Tx, Ty)
@@ -150,92 +136,110 @@ for path in image_paths:
         mse_values.append(m)
         psnr_values.append(p)
 
-        print(f"N = {n_max}")
-        print("  Moment shape :", M.shape)
-        print("  MSE :", m)
-        print("  PSNR :", p)
-        print()
+        print(f"  N = {n_max}  |  shape moments : {M.shape}  |  MSE : {m:.5f}  |  PSNR : {p:.2f} dB")
 
+    print()
     all_results[name] = {
-        "img": img,
-        "results": results,
+        "img":        img,
+        "results":    results,
         "mse_values": mse_values,
         "psnr_values": psnr_values,
     }
 
 if not all_results:
-    raise FileNotFoundError(
-        f"Aucune image valide n'a été chargée depuis: {dataset_root}"
-    )
+    raise FileNotFoundError(f"Aucune image valide chargée depuis : {dataset_root}")
 
 # =========================================================
-# 5. Courbe MSE pour toutes les images
+# 4. Courbe MSE — toutes les images
 # =========================================================
-plt.figure(figsize=(8, 6))
+fig, ax = plt.subplots(figsize=(10, 6))
 
 for name, data in all_results.items():
-    plt.semilogy(n_values, data["mse_values"], marker='o', label=name)
+    ax.semilogy(n_values, data["mse_values"], marker='o', label=name)
 
-plt.xlabel("N (ordre maximal)")
-plt.ylabel("MSE (échelle logarithmique)")
-plt.title("MSE en fonction de N pour plusieurs formes MPEG-7")
-plt.grid(True, which="both")
-plt.legend(fontsize=8)
-plt.tight_layout()
-plt.show()
+ax.set_xlabel("N (ordre maximal)")
+ax.set_ylabel("MSE (échelle logarithmique)")
+ax.set_title("MSE en fonction de N — formes MPEG-7")
+ax.grid(True, which="both", linestyle="--", alpha=0.6)
 
+# Laisser matplotlib gérer les ticks automatiquement (pas de surcharge)
+# Forcer uniquement les limites pour éviter la troncature
+all_mse_flat = [v for data in all_results.values() for v in data["mse_values"]]
+ax.set_ylim([min(all_mse_flat) * 0.8, max(all_mse_flat) * 1.4])
+
+# Format des étiquettes Y en notation décimale (ex: 0.0050 au lieu de 5e-3)
+ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.4f}"))
+
+ax.legend(fontsize=8, loc="upper right")
+fig.tight_layout(pad=1.5)
+
+mse_path = out_dir / f"multiclass_mse_{ts}.png"
+fig.savefig(mse_path, dpi=300, bbox_inches='tight')
+plt.close(fig)
+print(f"Courbe MSE sauvegardée : {mse_path}")
 # =========================================================
-# 6. Courbe PSNR pour toutes les images
+# 5. Courbe PSNR — toutes les images
 # =========================================================
-plt.figure(figsize=(8, 6))
+fig, ax = plt.subplots(figsize=(10, 6))
 
 for name, data in all_results.items():
-    plt.plot(n_values, data["psnr_values"], marker='o', label=name)
+    ax.plot(n_values, data["psnr_values"], marker='o', label=name)
 
-plt.xlabel("N (ordre maximal)")
-plt.ylabel("PSNR")
-plt.title("PSNR en fonction de N pour plusieurs formes MPEG-7")
-plt.grid(True)
-plt.legend(fontsize=8)
-plt.tight_layout()
-plt.show()
+ax.set_xlabel("N (ordre maximal)")
+ax.set_ylabel("PSNR (dB)")
+ax.set_title("PSNR en fonction de N — formes MPEG-7")
+ax.grid(True, linestyle="--", alpha=0.6)
+ax.legend(fontsize=8, loc="lower right")
+fig.tight_layout(pad=1.5)
+
+psnr_path = out_dir / f"multiclass_psnr_{ts}.png"
+fig.savefig(psnr_path, dpi=300, bbox_inches='tight')
+plt.close(fig)
+print(f"Courbe PSNR sauvegardée : {psnr_path}")
 
 # =========================================================
-# 7. Affichage : image originale + reconstruction pour N=20
+# 6. Grille original + reconstruction pour N = 20
 # =========================================================
 n_target = 20
+n_images = len(all_results)
 
-plt.figure(figsize=(16, 10))
-plot_idx = 1
+fig, axes = plt.subplots(n_images, 2, figsize=(8, 3 * n_images))
 
-for name, data in all_results.items():
+# Garantir que axes est toujours 2D même pour une seule image
+if n_images == 1:
+    axes = np.expand_dims(axes, axis=0)
+
+for row_idx, (name, data) in enumerate(all_results.items()):
     img = data["img"]
 
-    # trouver la reconstruction correspondant à N=20
-    rec_target = None
-    mse_target = None
-    psnr_target = None
-
+    # Trouver la reconstruction pour N = n_target
+    rec_target = mse_target = psnr_target = None
     for n_max, rec, m, p in data["results"]:
         if n_max == n_target:
-            rec_target = rec
-            mse_target = m
-            psnr_target = p
+            rec_target, mse_target, psnr_target = rec, m, p
             break
 
-    # image originale
-    plt.subplot(len(all_results), 2, plot_idx)
-    plt.imshow(img, cmap="gray")
-    plt.title(f"{name} - Original")
-    plt.axis("off")
-    plot_idx += 1
+    # Colonne gauche : image originale
+    axes[row_idx, 0].imshow(img, cmap="gray")
+    axes[row_idx, 0].set_title(f"{name}\nOriginal", fontsize=8)
+    axes[row_idx, 0].axis("off")
 
-    # image reconstruite
-    plt.subplot(len(all_results), 2, plot_idx)
-    plt.imshow(rec_target, cmap="gray")
-    plt.title(f"{name} - N={n_target}\nMSE={mse_target:.2e}, PSNR={psnr_target:.2f}")
-    plt.axis("off")
-    plot_idx += 1
+    # Colonne droite : reconstruction
+    if rec_target is not None:
+        axes[row_idx, 1].imshow(rec_target, cmap="gray")
+        axes[row_idx, 1].set_title(
+            f"{name}\nN={n_target} | MSE={mse_target:.4f} | PSNR={psnr_target:.2f} dB",
+            fontsize=8
+        )
+    else:
+        axes[row_idx, 1].text(0.5, 0.5, f"N={n_target} non calculé",
+                               ha='center', va='center', transform=axes[row_idx, 1].transAxes)
+    axes[row_idx, 1].axis("off")
 
-plt.tight_layout()
-plt.show()
+fig.suptitle(f"Reconstruction par moments de Chebyshev (N={n_target})", fontsize=12, y=1.01)
+fig.tight_layout(pad=1.0)
+
+recon_path = out_dir / f"multiclass_recon_N{n_target}_{ts}.png"
+fig.savefig(recon_path, dpi=200, bbox_inches='tight')
+plt.close(fig)
+print(f"Grille de reconstruction sauvegardée : {recon_path}")

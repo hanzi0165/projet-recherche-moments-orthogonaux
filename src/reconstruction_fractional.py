@@ -1,23 +1,23 @@
 import numpy as np
 
+def reconstruct_fractional_2d(C, Tx, Ty, dx, dy):
+    """
+    C  : (n_max+1, n_max+1)
+    Tx : (n_max+1, W)
+    Ty : (n_max+1, H)
+    dx : pas spatial en x (= 1/W)
+    dy : pas spatial en y (= 1/H)
+    """
+    # Recalcul des normes (mêmes que dans frcm_2d)
+    d2x = np.sum(Tx * Tx, axis=1) * dx   # (n_max+1,)
+    d2y = np.sum(Ty * Ty, axis=1) * dy   # (n_max+1,)
 
-def reconstruct_fractional_2d(M, Tx, Ty, dx=None, dy=None):
-    """
-    Reconstruct 2D image from fitted fractional-like Chebyshev moments.
-    M: moments matrix
-    Tx, Ty: orthonormal basis matrices
-    dx, dy: (unused, kept for API compatibility)
-    """
-    rec = Ty.T @ M @ Tx
-    return rec
+    # Facteur de normalisation pour chaque (n,m)
+    norm = np.sqrt(np.outer(d2y, d2x))   # (n_max+1, n_max+1)
 
+    # C_raw = C avant normalisation
+    C_raw = C / norm                      # annule la division faite dans frcm_2d
 
-def reconstruct_fractional_3d(M, Tx, Ty, Tz, dx=None, dy=None, dz=None):
-    """
-    Reconstruct 3D volume from fitted fractional-like Chebyshev moments.
-    M: moments tensor (n+1, n+1, n+1)
-    Tx, Ty, Tz: orthonormal basis matrices
-    dx, dy, dz: (unused, kept for API compatibility)
-    """
-    rec = np.einsum('qpr,qi,pj,rk->ijk', M, Ty, Tx, Tz)
+    # Reconstruction
+    rec = Ty.T @ C_raw @ Tx
     return rec
