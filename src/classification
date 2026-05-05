@@ -1,130 +1,496 @@
-from PIL import Image
-import numpy as np
-from pathlib import Path
+"""
+dnn_frcmi_mpeg7.py
+
+Pipeline complet FrCMI + DNN pour la classification MPEG-7 2D.
+Conforme à Gao et al., Sensors 2024, Section 3.3 et Table 1.
+
+Structure du réseau (Table 1 de l'article) :
+  Entrée  : vecteur FrCMI de dimension (n_max+1)²
+  Couche 1 : FC(100)  + BN + ELU  + Dropout
+  Couche 2 : FC(165)  + BN + ReLU + Dropout
+  Couche 3 : FC(245)  + BN + ReLU + Dropout
+  Couche 4 : FC(120)  + BN + ReLU + Dropout
+  Sortie   : Softmax → nombre de classes
+
+Évaluation (formules 34-37 de l'article) :
+  Accuracy, Precision, Recall, F1-score
+
+Dépendances :
+  pip install torch scikit-learn numpy matplotlib
+"""
+
 import os
+import csv
+import time
+import numpy as np
+import matplotlib.pyplot as plt
+from pathlib import Path
+from datetime import datetime
+from PIL import Image
+from scipy.ndimage import rotate as nd_rotate
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.svm import SVC
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.metrics import (accuracy_score, precision_score,
+                              recall_score, f1_score, confusion_matrix)
+from sklearn.preprocessing import LabelEncoder
 
-from moments_2d import chebyshev_moments_2d
-
-
-def resolve_dataset_root() -> Path:
-    env_dir = os.environ.get("MPEG7_ORIGINAL_DIR")
-
-    if "__file__" in globals():
-        script_dir = Path(__file__).resolve().parent
-    else:
-        script_dir = Path.cwd()
-
-    project_root = script_dir.parent
-    candidates = []
-
-    if env_dir:
-        candidates.append(Path(env_dir))
-
-    candidates.extend([
-        project_root / "MPEG7dataset" / "original",
-        project_root / "data" / "MPEG7dataset" / "original",
-        Path.home() / "Downloads" / "MPEG7dataset" / "original",
-    ])
-
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-
-    candidate_text = "\n".join(f"- {str(c)}" for c in candidates)
-    raise FileNotFoundError(
-        "Impossible de trouver le dossier MPEG-7 'original'.\n"
-        "Définissez MPEG7_ORIGINAL_DIR ou placez les données dans l'un des chemins suivants:\n"
-        f"{candidate_text}"
-    )
+# Import du pipeline FrCMI 2D déjà existant
+from fractional_2d import frgm_2d, chebyshev_power_coeffs, \
+                           fractional_chebyshev_basis_1d, numerical_basis_norms
+from frcmi_2d import frcmi_2d
 
 
-def load_binary_image(path):
-    img_pil = Image.open(path).convert("L")
-    arr = np.array(img_pil, dtype=np.float64)
+# ═══════════════════════════════════════════════════════════════════════════════
+# 1. CHARGEMENT ET EXTRACTION DES FEATURES FRCMI
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def load_binary_image(path: Path) -> np.ndarray:
+    """Charge une image MPEG-7 et la binarise."""
+    img = Image.open(path).convert("L")
+    arr = np.array(img, dtype=np.float64)
     return (arr > 127).astype(np.float64)
 
 
-def extract_label(path: Path):
-    return path.stem.split("-")[0].lower()
+def extract_class_name(filename: str) -> str:
+    """
+    Extrait le nom de classe depuis le nom de fichier.
+    Ex: 'heart-01.gif' → 'heart'
+        'Bone-10.gif'  → 'bone'
+    """
+    stem = Path(filename).stem          # 'heart-01'
+    parts = stem.rsplit('-', 1)         # ['heart', '01']
+    return parts[0].lower()
 
 
-def build_dataset(root_dir, n_max=20, max_per_class=None, selected_labels=None):
-    root = Path(root_dir)
-    files = sorted(root.glob("*.gif"))
+def extract_all_features(dataset_root: Path, n_max: int,
+                          alpha_x: float, alpha_y: float,
+                          cache_path: Path = None) -> tuple:
+    """
+    Extrait les vecteurs FrCMI pour toutes les images MPEG-7.
 
-    class_counts = {}
+    Utilise un cache .npz pour éviter de recalculer si déjà fait.
+    Retourne (X, y_labels) où :
+      X        : array (N_images, (n_max+1)²)
+      y_labels : liste de noms de classes (str)
+    """
+    # Vérifier le cache
+    if cache_path and cache_path.exists():
+        print(f"  Chargement du cache : {cache_path}")
+        data = np.load(cache_path, allow_pickle=True)
+        return data['X'], list(data['y_labels'])
+
+    print(f"  Extraction des features FrCMI (n_max={n_max}, α=({alpha_x},{alpha_y}))...")
+    print(f"  Dossier dataset : {dataset_root}")
+
+    gif_files = sorted(dataset_root.glob("*.gif"))
+    if not gif_files:
+        raise FileNotFoundError(f"Aucun fichier .gif trouvé dans {dataset_root}")
+
+    print(f"  Nombre d'images : {len(gif_files)}")
+
     X = []
-    y = []
+    y_labels = []
+    errors = []
 
-    for f in files:
-        label = extract_label(f)
+    for i, path in enumerate(gif_files):
+        try:
+            img = load_binary_image(path)
+            vec = frcmi_2d(img, n_max, alpha_x=alpha_x, alpha_y=alpha_y)
+            X.append(vec)
+            y_labels.append(extract_class_name(path.name))
 
-        if selected_labels is not None and label not in selected_labels:
-            continue
+            if (i + 1) % 50 == 0 or i == 0:
+                print(f"    {i+1}/{len(gif_files)} — dernier : {path.name}  dim={vec.shape[0]}")
 
-        if max_per_class is not None:
-            cnt = class_counts.get(label, 0)
-            if cnt >= max_per_class:
-                continue
-            class_counts[label] = cnt + 1
+        except Exception as e:
+            errors.append(f"{path.name}: {e}")
+            print(f"    [ERREUR] {path.name}: {e}")
 
-        img = load_binary_image(f)
-        M, _, _ = chebyshev_moments_2d(img, n_max)
-        feat = M.flatten()
+    if errors:
+        print(f"\n  {len(errors)} erreurs sur {len(gif_files)} images.")
 
-        X.append(feat)
-        y.append(label)
+    X = np.array(X, dtype=np.float32)
+    y_labels = np.array(y_labels)
 
-    return np.array(X), np.array(y)
+    print(f"\n  Feature matrix : {X.shape}")
+    print(f"  Classes uniques : {len(np.unique(y_labels))}")
+
+    # Sauvegarder le cache
+    if cache_path:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(cache_path, X=X, y_labels=y_labels)
+        print(f"  Cache sauvegardé : {cache_path}")
+
+    return X, list(y_labels)
 
 
-root_dir = resolve_dataset_root()
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2. ARCHITECTURE DNN — TABLE 1 DE L'ARTICLE
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# 可改：只做这三类
-selected_labels = {"apple", "heart", "dog"}
+class FrCMsDNN(nn.Module):
+    """
+    Réseau DNN conforme à la Table 1 de Gao et al. 2024.
 
-# 可改：Chebyshev 最大阶数
-n_max = 20
+    Structure :
+      FC(input_dim → 100) + BN + ELU  + Dropout
+      FC(100 → 165)        + BN + ReLU + Dropout
+      FC(165 → 245)        + BN + ReLU + Dropout
+      FC(245 → 120)        + BN + ReLU + Dropout
+      FC(120 → n_classes)  + Softmax (via CrossEntropyLoss)
+    """
 
-# 可改：每类最多取多少张
-max_per_class = 10
+    def __init__(self, input_dim: int, n_classes: int, dropout_rate: float = 0.3):
+        super().__init__()
 
-X, y = build_dataset(
-    root_dir,
-    n_max=n_max,
-    max_per_class=max_per_class,
-    selected_labels=selected_labels
-)
+        def block(in_f, out_f, activation):
+            layers = [
+                nn.Linear(in_f, out_f),
+                nn.BatchNorm1d(out_f),
+                activation,
+                nn.Dropout(dropout_rate),
+            ]
+            return nn.Sequential(*layers)
 
-print("Dataset shape:", X.shape)
-print("Labels:", sorted(set(y)))
+        self.layer1 = block(input_dim, 100, nn.ELU())    # couche 1 : ELU
+        self.layer2 = block(100, 165,       nn.ReLU())   # couche 2 : ReLU
+        self.layer3 = block(165, 245,       nn.ReLU())   # couche 3 : ReLU
+        self.layer4 = block(245, 120,       nn.ReLU())   # couche 4 : ReLU
+        self.output = nn.Linear(120, n_classes)           # sortie Softmax
 
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y
-)
+    def forward(self, x):
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        return self.output(x)   # logits — Softmax appliqué par CrossEntropyLoss
 
-# ===== kNN =====
-knn = KNeighborsClassifier(n_neighbors=3)
-knn.fit(X_train, y_train)
-pred_knn = knn.predict(X_test)
 
-print("=== kNN ===")
-print("Accuracy:", accuracy_score(y_test, pred_knn))
-print(classification_report(y_test, pred_knn))
-print("Confusion matrix:")
-print(confusion_matrix(y_test, pred_knn, labels=sorted(set(y))))
+# ══════════════════════════════════════════════════════train═════════════════════════
+# 3. ENTRAÎNEMENT
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# ===== SVM =====
-svm = SVC(kernel="rbf")
-svm.fit(X_train, y_train)
-pred_svm = svm.predict(X_test)
+def train_epoch(model, loader, optimizer, criterion, device):
+    """Une époque d'entraînement. Retourne (loss_moy, accuracy)."""
+    model.train()
+    total_loss, correct, total = 0.0, 0, 0
 
-print("=== SVM ===")
-print("Accuracy:", accuracy_score(y_test, pred_svm))
-print(classification_report(y_test, pred_svm))
-print("Confusion matrix:")
-print(confusion_matrix(y_test, pred_svm, labels=sorted(set(y))))
+    for X_batch, y_batch in loader:
+        X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+        optimizer.zero_grad()
+        logits = model(X_batch)
+        loss = criterion(logits, y_batch)
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item() * len(y_batch)
+        correct    += (logits.argmax(1) == y_batch).sum().item()
+        total      += len(y_batch)
+
+    return total_loss / total, correct / total
+
+
+def evaluate(model, loader, criterion, device):
+    """Évaluation sur un loader. Retourne (loss, accuracy, y_true, y_pred)."""
+    model.eval()
+    total_loss, correct, total = 0.0, 0, 0
+    y_true_all, y_pred_all = [], []
+
+    with torch.no_grad():
+        for X_batch, y_batch in loader:
+            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+            logits = model(X_batch)
+            loss = criterion(logits, y_batch)
+
+            preds = logits.argmax(1)
+            total_loss += loss.item() * len(y_batch)
+            correct    += (preds == y_batch).sum().item()
+            total      += len(y_batch)
+            y_true_all.extend(y_batch.cpu().numpy())
+            y_pred_all.extend(preds.cpu().numpy())
+
+    return total_loss / total, correct / total, \
+           np.array(y_true_all), np.array(y_pred_all)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 4. MÉTRIQUES — FORMULES (34)-(37) DE L'ARTICLE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_metrics(y_true, y_pred, class_names=None):
+    """
+    Calcule Accuracy, Precision, Recall, F1-score.
+    Formules (34)-(37) de l'article.
+    """
+    acc  = accuracy_score(y_true, y_pred)
+    prec = precision_score(y_true, y_pred, average='macro', zero_division=0)
+    rec  = recall_score(y_true, y_pred,    average='macro', zero_division=0)
+    f1   = f1_score(y_true, y_pred,        average='macro', zero_division=0)
+    cm   = confusion_matrix(y_true, y_pred)
+    return {"accuracy": acc, "precision": prec, "recall": rec,
+            "f1": f1, "confusion_matrix": cm}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5. VISUALISATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def plot_training_curves(train_losses, val_losses,
+                          train_accs,  val_accs, out_path=None):
+    """Courbes loss et accuracy pendant l'entraînement."""
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    fig.suptitle("FrCMs-DNNs — Courbes d'entraînement", fontsize=12)
+
+    epochs = range(1, len(train_losses) + 1)
+
+    axes[0].plot(epochs, train_losses, label="Train loss")
+    axes[0].plot(epochs, val_losses,   label="Val loss")
+    axes[0].set_xlabel("Époque")
+    axes[0].set_ylabel("Cross-entropy loss")
+    axes[0].set_title("Loss")
+    axes[0].legend()
+    axes[0].grid(True, linestyle="--", alpha=0.6)
+
+    axes[1].plot(epochs, train_accs, label="Train accuracy")
+    axes[1].plot(epochs, val_accs,   label="Val accuracy")
+    axes[1].set_xlabel("Époque")
+    axes[1].set_ylabel("Accuracy")
+    axes[1].set_title("Accuracy")
+    axes[1].legend()
+    axes[1].grid(True, linestyle="--", alpha=0.6)
+
+    plt.tight_layout()
+    if out_path:
+        fig.savefig(out_path, dpi=200, bbox_inches='tight')
+        print(f"  Courbes : {out_path}")
+    plt.close(fig)
+
+
+def plot_confusion_matrix(cm, class_names, out_path=None):
+    """Matrice de confusion (comme Figure 10 de l'article)."""
+    n = len(class_names)
+    fig, ax = plt.subplots(figsize=(max(8, n*0.5), max(6, n*0.45)))
+
+    im = ax.imshow(cm, cmap='Blues')
+    ax.set_xticks(range(n))
+    ax.set_yticks(range(n))
+    ax.set_xticklabels(class_names, rotation=45, ha='right', fontsize=7)
+    ax.set_yticklabels(class_names, fontsize=7)
+    ax.set_xlabel("Prédit", fontsize=10)
+    ax.set_ylabel("Réel",   fontsize=10)
+    ax.set_title("Matrice de confusion — FrCMs-DNNs", fontsize=11)
+
+    # Valeurs dans les cellules
+    thresh = cm.max() / 2.0
+    for i in range(n):
+        for j in range(n):
+            if cm[i, j] > 0:
+                ax.text(j, i, str(cm[i, j]),
+                        ha='center', va='center', fontsize=6,
+                        color='white' if cm[i, j] > thresh else 'black')
+
+    plt.colorbar(im, ax=ax, fraction=0.03)
+    plt.tight_layout()
+    if out_path:
+        fig.savefig(out_path, dpi=200, bbox_inches='tight')
+        print(f"  Matrice de confusion : {out_path}")
+    plt.close(fig)
+
+
+def plot_metrics_bar(metrics, out_path=None):
+    """Diagramme en barres Accuracy/Precision/Recall/F1 (comme Figure 12)."""
+    labels = ["Accuracy", "Precision", "Recall", "F1-score"]
+    values = [metrics["accuracy"], metrics["precision"],
+              metrics["recall"],   metrics["f1"]]
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    bars = ax.bar(labels, values, color=['steelblue','darkorange','green','red'],
+                  alpha=0.8, width=0.5)
+    ax.set_ylim(0, 1.1)
+    ax.set_ylabel("Score")
+    ax.set_title("FrCMs-DNNs — Métriques de classification", fontsize=11)
+    ax.grid(True, axis='y', linestyle="--", alpha=0.5)
+
+    for bar, val in zip(bars, values):
+        ax.text(bar.get_x() + bar.get_width()/2, val + 0.02,
+                f"{val:.4f}", ha='center', fontsize=10, fontweight='bold')
+
+    plt.tight_layout()
+    if out_path:
+        fig.savefig(out_path, dpi=200, bbox_inches='tight')
+        print(f"  Métriques : {out_path}")
+    plt.close(fig)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 6. PROGRAMME PRINCIPAL
+# ═══════════════════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+
+    # ── Paramètres ───────────────────────────────────────────────────────────
+    DATASET_ROOT = Path(r"C:\Users\Flora\Downloads\MPEG7dataset\original")  # ← modifier
+
+    N_MAX   = 10      # ordre des moments — vecteur de dim (N+1)² = 121
+    ALPHA_X = 0.9     # meilleur alpha trouvé dans tes expériences
+    ALPHA_Y = 0.9
+
+    TEST_SIZE    = 0.60   # 60% test, 40% train — conforme à l'article
+    EPOCHS       = 100
+    BATCH_SIZE   = 32
+    LR           = 1e-3
+    DROPOUT      = 0.3
+    WEIGHT_DECAY = 1e-4   # régularisation L2
+
+    # ── Sorties ───────────────────────────────────────────────────────────────
+    try:
+        script_dir = Path(__file__).resolve().parent
+    except NameError:
+        script_dir = Path.cwd()
+    out_dir = script_dir.parent / "outputs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    cache_path = out_dir / f"frcmi_features_n{N_MAX}_a{ALPHA_X}.npz"
+
+    # ── 1. Extraction des features ────────────────────────────────────────────
+    print("=" * 60)
+    print("Étape 1 : Extraction des features FrCMI")
+    print("=" * 60)
+    t0 = time.time()
+    X, y_labels = extract_all_features(
+        DATASET_ROOT, N_MAX, ALPHA_X, ALPHA_Y, cache_path=cache_path
+    )
+    print(f"  Temps extraction : {time.time()-t0:.1f}s")
+    print()
+
+    # ── 2. Encodage des labels ────────────────────────────────────────────────
+    le = LabelEncoder()
+    y  = le.fit_transform(y_labels)
+    class_names = list(le.classes_)
+    n_classes   = len(class_names)
+    input_dim   = X.shape[1]
+
+    print(f"  Dimension vecteur FrCMI : {input_dim}  (= (N+1)² = {(N_MAX+1)**2})")
+    print(f"  Nombre de classes       : {n_classes}")
+    print(f"  Exemples par classe     : {len(X) // n_classes} (environ)")
+    print()
+
+    # ── 3. Split train/test — conforme à l'article (40%/60%) ─────────────────
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=TEST_SIZE, random_state=42, stratify=y
+    )
+    print(f"  Train : {len(X_train)} images")
+    print(f"  Test  : {len(X_test)} images")
+    print()
+
+    # Normalisation (z-score)
+    mean = X_train.mean(axis=0)
+    std  = X_train.std(axis=0) + 1e-8
+    X_train = (X_train - mean) / std
+    X_test  = (X_test  - mean) / std
+
+    # DataLoaders
+    train_ds = TensorDataset(torch.tensor(X_train), torch.tensor(y_train, dtype=torch.long))
+    test_ds  = TensorDataset(torch.tensor(X_test),  torch.tensor(y_test,  dtype=torch.long))
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
+    test_loader  = DataLoader(test_ds,  batch_size=BATCH_SIZE, shuffle=False)
+
+    # ── 4. Création du modèle ─────────────────────────────────────────────────
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"  Device : {device}")
+
+    model     = FrCMsDNN(input_dim, n_classes, DROPOUT).to(device)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.5)
+
+    print(f"\n  Paramètres du modèle : {sum(p.numel() for p in model.parameters()):,}")
+    print()
+
+    # ── 5. Entraînement ───────────────────────────────────────────────────────
+    print("=" * 60)
+    print("Étape 2 : Entraînement FrCMs-DNNs")
+    print("=" * 60)
+
+    train_losses, val_losses = [], []
+    train_accs,   val_accs   = [], []
+    best_val_acc  = 0.0
+    best_state    = None
+
+    for epoch in range(1, EPOCHS + 1):
+        tr_loss, tr_acc = train_epoch(model, train_loader, optimizer, criterion, device)
+        va_loss, va_acc, _, _ = evaluate(model, test_loader, criterion, device)
+        scheduler.step()
+
+        train_losses.append(tr_loss);  val_losses.append(va_loss)
+        train_accs.append(tr_acc);     val_accs.append(va_acc)
+
+        if va_acc > best_val_acc:
+            best_val_acc = va_acc
+            best_state   = {k: v.clone() for k, v in model.state_dict().items()}
+
+        if epoch % 10 == 0 or epoch == 1:
+            print(f"  Époque {epoch:3d}/{EPOCHS}  "
+                  f"loss={tr_loss:.4f}  acc_train={tr_acc:.4f}  "
+                  f"acc_val={va_acc:.4f}  (best={best_val_acc:.4f})")
+
+    # Restaurer le meilleur modèle
+    model.load_state_dict(best_state)
+    print(f"\n  Meilleure accuracy validation : {best_val_acc:.4f}")
+
+    # ── 6. Évaluation finale ──────────────────────────────────────────────────
+    print()
+    print("=" * 60)
+    print("Étape 3 : Évaluation finale")
+    print("=" * 60)
+
+    _, _, y_true, y_pred = evaluate(model, test_loader, criterion, device)
+    metrics = compute_metrics(y_true, y_pred, class_names)
+
+    print(f"  Accuracy  : {metrics['accuracy']:.4f}")
+    print(f"  Precision : {metrics['precision']:.4f}")
+    print(f"  Recall    : {metrics['recall']:.4f}")
+    print(f"  F1-score  : {metrics['f1']:.4f}")
+
+    # ── 7. Sauvegarde des figures ─────────────────────────────────────────────
+    plot_training_curves(train_losses, val_losses, train_accs, val_accs,
+                          out_path=out_dir / f"dnn_curves_{ts}.png")
+
+    plot_confusion_matrix(metrics["confusion_matrix"], class_names,
+                           out_path=out_dir / f"dnn_confusion_{ts}.png")
+
+    plot_metrics_bar(metrics,
+                     out_path=out_dir / f"dnn_metrics_{ts}.png")
+
+    # ── 8. Sauvegarde CSV des résultats ───────────────────────────────────────
+    csv_path = out_dir / f"dnn_results_{ts}.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["metric", "value"])
+        w.writeheader()
+        for k, v in metrics.items():
+            if k != "confusion_matrix":
+                w.writerow({"metric": k, "value": f"{v:.6f}"})
+    print(f"\n  CSV résultats : {csv_path}")
+    print(f"  Fichiers dans : {out_dir}")
+
+    # ── 9. Tableau récapitulatif ──────────────────────────────────────────────
+    print()
+    print("=" * 40)
+    print("  Résumé final FrCMs-DNNs")
+    print("-" * 40)
+    print(f"  N_max    = {N_MAX}  (dim={input_dim})")
+    print(f"  Alpha    = ({ALPHA_X}, {ALPHA_Y})")
+    print(f"  Classes  = {n_classes}")
+    print(f"  Train/Test = {100-int(TEST_SIZE*100)}% / {int(TEST_SIZE*100)}%")
+    print(f"  Epochs   = {EPOCHS}")
+    print("-" * 40)
+    print(f"  Accuracy  = {metrics['accuracy']:.4f}")
+    print(f"  Precision = {metrics['precision']:.4f}")
+    print(f"  Recall    = {metrics['recall']:.4f}")
+    print(f"  F1-score  = {metrics['f1']:.4f}")
+    print("=" * 40)
