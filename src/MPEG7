@@ -10,26 +10,26 @@ from metrics import mse, psnr
 
 path = r"C:\Users\Flora\Downloads\MPEG7dataset\original\teddy-03.gif"
 
-# 1. 读取原图
+# 1. Lire l'image originale
 img_pil = Image.open(path).convert("L")
 arr = np.array(img_pil, dtype=np.float64)
 
-# 新增：查看图像尺寸
+# Ajout : vérifier la taille de l'image
 print("PIL size (width, height):", img_pil.size)
 print("NumPy shape (height, width):", arr.shape)
 
-# 准备输出目录与时间戳
+# Préparer le répertoire de sortie et le timestamp
 out_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'outputs'))
 os.makedirs(out_dir, exist_ok=True)
 ts = datetime.now().strftime('%Y%m%d_%H%M%S')
 
-# 2. 二值化
+# 2. Binarisation
 img = (arr > 127).astype(np.float64)
 
-# 3. 选择多个 N
+# 3. Choisir plusieurs valeurs de N
 n_values = [5, 10, 20, 30, 40, 50, 60]
 
-# 4. 打印每个 N 的指标
+# 4. Afficher les métriques pour chaque N
 print("Image shape:", img.shape)
 print("Unique values:", np.unique(img))
 print()
@@ -55,7 +55,7 @@ for n_max in n_values:
     print("  PSNR:", p)
     print()
 
-# 5. 原图 + 重建图
+# 5. Image originale + images reconstruites
 num_plots = 1 + len(n_values)
 fig = plt.figure(figsize=(4 * num_plots, 4))
 
@@ -96,7 +96,7 @@ fig.savefig(mse_path, dpi=300, bbox_inches='tight')
 plt.close(fig)
 print('Saved MSE figure to', mse_path)
 
-# 7. PSNR 曲线
+# 7. Courbe PSNR
 fig = plt.figure(figsize=(6, 4))
 plt.plot(n_values, psnr_values, marker='o')
 plt.xlabel("N")

@@ -354,7 +354,7 @@ if __name__ == "__main__":
     # ── Paramètres ───────────────────────────────────────────────────────────
     IM_PATH     = r"C:\Users\Flora\Downloads\cupsIm\cupsIm\b1.im.gz"
     ALPHA       = 1.0      # paramètre fractionnaire (optimal sur MPEG-7 2D)
-    N_VALUES    = [3, 5, 8, 10, 13]   # ordres à tester
+    N_VALUES    = [3, 5, 8, 10, 13,16]   # ordres à tester
     RENDER_SIZE = 32       # résolution pour le rendu voxel (32 = rapide)
     # Note : frac_basis() est lent pour n_max élevé sur 128³
     # Commencer par N_VALUES=[3,5,8] pour valider

@@ -9,13 +9,13 @@ def chebyshev_moments_2d(img, n_max):
     Tx = chebyshev_basis_1d(n_max, x)   # (n+1, W)
     Ty = chebyshev_basis_1d(n_max, y)   # (n+1, H)
 
-    # Solve min ||img - Ty.T @ M @ Tx||_F in a numerically stable way.
+    # Résoudre min ||img - Ty.T @ M @ Tx||_F de manière numériquement stable.
     By = Ty.T  # (H, n+1)
     Bx = Tx.T  # (W, n+1)
 
-    # Step 1: solve By @ A ~= img  -> A ~= M @ Bx.T
+    # Étape 1 : résoudre By @ A ~= img  -> A ~= M @ Bx.T
     A, *_ = np.linalg.lstsq(By, img, rcond=None)
-    # Step 2: solve Bx @ Z ~= A.T with Z = M.T
+    # Étape 2 : résoudre Bx @ Z ~= A.T avec Z = M.T
     Z, *_ = np.linalg.lstsq(Bx, A.T, rcond=None)
     M = Z.T
     return M, Tx, Ty

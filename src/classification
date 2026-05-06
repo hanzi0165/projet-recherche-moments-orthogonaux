@@ -28,6 +28,7 @@ from pathlib import Path
 from datetime import datetime
 from PIL import Image
 from scipy.ndimage import rotate as nd_rotate
+from collections import Counter
 
 import torch
 import torch.nn as nn
@@ -107,9 +108,10 @@ def extract_all_features(dataset_root: Path, n_max: int,
                 print(f"    {i+1}/{len(gif_files)} — dernier : {path.name}  dim={vec.shape[0]}")
 
         except Exception as e:
+            import traceback
             errors.append(f"{path.name}: {e}")
-            print(f"    [ERREUR] {path.name}: {e}")
-
+            print(f"    [ERREUR] {path.name}: {type(e).__name__}: {e}")
+            traceback.print_exc()
     if errors:
         print(f"\n  {len(errors)} erreurs sur {len(gif_files)} images.")
 
@@ -381,12 +383,25 @@ if __name__ == "__main__":
     print()
 
     # ── 3. Split train/test — conforme à l'article (40%/60%) ─────────────────
+    label_counts = Counter(y)
+    rare_classes = {cls for cls, cnt in label_counts.items() if cnt < 2}
+
+    if rare_classes:
+        rare_names = [le.classes_[i] for i in rare_classes]
+        print(f"  [INFO] Classes ignorées : {rare_names}")
+        mask = np.array([yi not in rare_classes for yi in y])
+        X = X[mask]
+        y = y[mask]
+        print(f"  Après filtrage : {len(X)} images, {len(np.unique(y))} classes")
+        print()
+
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=TEST_SIZE, random_state=42, stratify=y
     )
     print(f"  Train : {len(X_train)} images")
     print(f"  Test  : {len(X_test)} images")
     print()
+    
 
     # Normalisation (z-score)
     mean = X_train.mean(axis=0)
