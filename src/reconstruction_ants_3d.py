@@ -354,6 +354,10 @@ if __name__ == "__main__":
             C, Tx, Ty, Tz = frcm_3d_stable(vol, n_max,
                                               alpha_x=ax, alpha_y=ay, alpha_z=az)
             rec = reconstruct_frcm_3d(C, Tx, Ty, Tz)
+            rec_min = rec.min()
+            rec_max = rec.max()
+            if rec_max - rec_min > 1e-12:
+                rec = (rec - rec_min) / (rec_max - rec_min)
 
             m = mse_3d(vol, rec)
             p = psnr_3d(vol, rec)
