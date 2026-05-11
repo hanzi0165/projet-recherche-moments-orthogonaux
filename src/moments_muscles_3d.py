@@ -162,7 +162,7 @@ def compare_moments(moments_dict: dict):
     n     = len(names)
     dist  = np.zeros((n, n), dtype=np.float64)
 
-    # 先归一化每个矩矩阵到[0,1]
+    # Normalisation min-max pour chaque matrice de moments
     normalized = {}
     for name, C in moments_dict.items():
         cmin = C.min()
@@ -186,28 +186,33 @@ def compare_moments(moments_dict: dict):
 
 def plot_moment_slices(moments_dict: dict, out_path=None):
     """
-    Pour chaque muscle, affiche une coupe centrale de la matrice de moments.
-    La coupe centrale C[n_max//2, :, :] montre la distribution 2D des moments.
+    Pour chaque muscle : 3 coupes (z_min, z_mid, z_max) de la matrice de moments.
+    3 lignes × n_muscles colonnes.
     """
-    names  = list(moments_dict.keys())
-    n      = len(names)
-    mid    = N_MAX // 2
+    names = list(moments_dict.keys())
+    n     = len(names)
+    
+    # 3 coupes : n=0 (bas), n=N_MAX//2 (milieu), n=N_MAX (haut)
+    slices_idx = [0, N_MAX // 2, N_MAX]
+    slice_labels = ["n=0 (bas)", f"n={N_MAX//2} (milieu)", f"n={N_MAX} (haut)"]
 
-    fig, axes = plt.subplots(1, n, figsize=(4 * n, 4))
+    fig, axes = plt.subplots(3, n, figsize=(4 * n, 10))
     fig.suptitle(
-        f"Matrices de moments FrCM 3D — Coupe centrale (n={mid})\n"
+        f"Matrices de moments FrCM 3D — 3 coupes\n"
         f"N={N_MAX}  α={ALPHA}",
         fontsize=11
     )
 
-    for i, name in enumerate(names):
-        C    = moments_dict[name]
-        sl   = C[mid, :, :]
-        im   = axes[i].imshow(np.abs(sl), cmap='viridis', aspect='auto')
-        axes[i].set_title(name, fontsize=8)
-        axes[i].set_xlabel("p")
-        axes[i].set_ylabel("q")
-        plt.colorbar(im, ax=axes[i], fraction=0.046)
+    for row, (idx, slabel) in enumerate(zip(slices_idx, slice_labels)):
+        for col, name in enumerate(names):
+            C  = moments_dict[name]
+            sl = C[idx, :, :]
+            im = axes[row, col].imshow(np.abs(sl), cmap='viridis', aspect='auto')
+            if row == 0:
+                axes[row, col].set_title(name, fontsize=8)
+            axes[row, col].set_xlabel("p", fontsize=7)
+            axes[row, col].set_ylabel(f"q\n{slabel}", fontsize=7)
+            plt.colorbar(im, ax=axes[row, col], fraction=0.046)
 
     plt.tight_layout()
     if out_path:
@@ -358,6 +363,42 @@ if __name__ == "__main__":
         dist_matrix, names,
         out_path=out_dir / f"moments_distances_{ts}.png"
     )
+
+    
+    # ── Figure 3D voxel pour chaque muscle ───────────────────────────────────
+    GRAY = [0.65, 0.65, 0.65, 0.85]
+    COLORS = [
+        [0.85, 0.45, 0.45, 0.85],  # rose
+        [0.30, 0.65, 0.30, 0.85],  # vert
+        [0.25, 0.45, 0.85, 0.85],  # bleu
+        [0.60, 0.40, 0.20, 0.85],  # marron
+        [0.85, 0.75, 0.20, 0.85],  # jaune
+    ]
+    names_list = list(muscles.keys())
+    n_muscles  = len(names_list)
+
+    fig3d = plt.figure(figsize=(4 * n_muscles, 5))
+    fig3d.suptitle("Volumes 3D des muscles segmentés (32³)", fontsize=11)
+
+    for i, name in enumerate(names_list):
+        ax = fig3d.add_subplot(1, n_muscles, i + 1, projection='3d')
+        vol_bin = muscles[name]['bin']
+        color   = COLORS[i % len(COLORS)]
+        arr = np.zeros(vol_bin.shape + (4,), dtype=float)
+        arr[...] = color
+        ax.voxels(vol_bin.astype(bool), facecolors=arr, edgecolor='none')
+        ax.set_title(name, fontsize=8)
+        ax.set_box_aspect([1, 1, 1])
+        ax.xaxis.pane.fill = False
+        ax.yaxis.pane.fill = False
+        ax.zaxis.pane.fill = False
+        ax.tick_params(labelsize=5)
+
+    plt.tight_layout()
+    voxel3d_path = out_dir / f"muscles_voxel3d_{ts}.png"
+    fig3d.savefig(voxel3d_path, dpi=150, bbox_inches='tight')
+    plt.close(fig3d)
+    print(f"  Muscles 3D : {voxel3d_path}")
 
     # ── 5. Résumé ─────────────────────────────────────────────────────────────
     print()

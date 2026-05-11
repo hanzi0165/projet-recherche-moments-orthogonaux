@@ -296,6 +296,114 @@ def plot_curves_multi_alpha(n_values, results_by_alpha, out_path=None):
         print(f"  Courbes : {out_path}")
     plt.close(fig)
 
+def plot_progression_slices(vol, orig_bin, n_values,
+                              alpha_x, alpha_y, alpha_z, out_path=None):
+    """Coupe centrale pour chaque N : Original | N=10 | N=20 | ... | N=50"""
+    mid   = vol.shape[0] // 2
+    ncols = 1 + len(n_values)
+    fig, axes = plt.subplots(1, ncols, figsize=(3.5 * ncols, 4))
+    fig.suptitle(
+        f"Progression reconstruction — coupes centrales z={mid}\n"
+        f"α=({alpha_x},{alpha_y},{alpha_z})", fontsize=11
+    )
+    axes[0].imshow(vol[mid], cmap='gray', vmin=0, vmax=1)
+    axes[0].set_title("Original", fontsize=9, fontweight='bold')
+    axes[0].axis('off')
+
+    for col, n_max in enumerate(n_values, start=1):
+        print(f"  [Slices prog] N={n_max} ...", end=" ", flush=True)
+        C, Tx, Ty, Tz = frcm_3d_stable(vol, n_max, alpha_x, alpha_y, alpha_z)
+        rec = reconstruct_frcm_3d(C, Tx, Ty, Tz)
+        rec_min, rec_max = rec.min(), rec.max()
+        if rec_max - rec_min > 1e-12:
+            rec = (rec - rec_min) / (rec_max - rec_min)
+        m = mse_3d(vol, rec)
+        p = psnr_3d(vol, rec)
+        # Trouver k optimal
+        best_d, best_k = 0.0, 2.0
+        for k in np.arange(0.5, 4.0, 0.1):
+            thr_k = rec.mean() + k * rec.std()
+            rb_k  = (rec > thr_k).astype(np.float64)
+            d_k, _, _, _ = dice_score(orig_bin, rb_k)
+            if d_k > best_d:
+                best_d, best_k = d_k, k
+        print(f"MSE={m:.4f} PSNR={p:.1f}dB DICE={best_d:.3f}")
+        axes[col].imshow(rec[mid], cmap='gray', vmin=0, vmax=1)
+        axes[col].set_title(
+            f"N={n_max}\nMSE={m:.4f}\nPSNR={p:.1f}dB\nDICE={best_d:.3f}",
+            fontsize=7
+        )
+        axes[col].axis('off')
+
+    plt.tight_layout()
+    if out_path:
+        fig.savefig(out_path, dpi=200, bbox_inches='tight')
+        print(f"\n  Slices progression : {out_path}")
+    plt.close(fig)
+
+
+def plot_progression_voxel(vol, orig_bin, n_values,
+                             alpha_x, alpha_y, alpha_z,
+                             threshold_k=2.0,
+                             out_path=None, max_voxels=50000):
+    """Voxel 3D pour chaque N : Original | N=10 | N=20 | ... | N=50"""
+    GRAY = [0.65, 0.65, 0.65, 0.85]
+    BLUE = [0.20, 0.40, 0.80, 0.85]
+
+    def make_rgba_local(shape, rgba):
+        arr = np.zeros(shape + (4,), dtype=float)
+        arr[...] = rgba
+        return arr
+
+    def style_ax_local(ax):
+        ax.set_box_aspect([1, 1, 1])
+        ax.xaxis.pane.fill = False
+        ax.yaxis.pane.fill = False
+        ax.zaxis.pane.fill = False
+        ax.tick_params(labelsize=5)
+
+    ncols = 1 + len(n_values)
+    fig = plt.figure(figsize=(4 * ncols, 5))
+    fig.suptitle(
+        f"Progression reconstruction 3D — voxels\n"
+        f"α=({alpha_x},{alpha_y},{alpha_z})", fontsize=11
+    )
+
+    ax0 = fig.add_subplot(1, ncols, 1, projection='3d')
+    if int(orig_bin.sum()) <= max_voxels:
+        ax0.voxels(orig_bin.astype(bool),
+                   facecolors=make_rgba_local(orig_bin.shape, GRAY),
+                   edgecolor='none')
+    ax0.set_title("Original", fontsize=9, fontweight='bold')
+    style_ax_local(ax0)
+
+    for col, n_max in enumerate(n_values, start=1):
+        print(f"  [Voxel prog] N={n_max} ...", end=" ", flush=True)
+        C, Tx, Ty, Tz = frcm_3d_stable(vol, n_max, alpha_x, alpha_y, alpha_z)
+        rec = reconstruct_frcm_3d(C, Tx, Ty, Tz)
+        rec_min, rec_max = rec.min(), rec.max()
+        if rec_max - rec_min > 1e-12:
+            rec = (rec - rec_min) / (rec_max - rec_min)
+        thr     = rec.mean() + threshold_k * rec.std()
+        rec_bin = (rec > thr).astype(np.float64)
+        m = mse_3d(vol, rec)
+        d, _, _, _ = dice_score(orig_bin, rec_bin)
+        print(f"DICE={d:.3f}")
+
+        ax = fig.add_subplot(1, ncols, col + 1, projection='3d')
+        if int(orig_bin.sum()) + int(rec_bin.sum()) <= max_voxels:
+            ax.voxels(rec_bin.astype(bool),
+                      facecolors=make_rgba_local(rec_bin.shape, BLUE),
+                      edgecolor='none')
+        ax.set_title(f"N={n_max}\nDICE={d:.3f}\nMSE={m:.4f}", fontsize=7)
+        style_ax_local(ax)
+
+    plt.tight_layout()
+    if out_path:
+        fig.savefig(out_path, dpi=120, bbox_inches='tight')
+        print(f"\n  Voxel progression : {out_path}")
+    plt.close(fig)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 7. PROGRAMME PRINCIPAL
@@ -304,9 +412,9 @@ def plot_curves_multi_alpha(n_values, results_by_alpha, out_path=None):
 if __name__ == "__main__":
 
     # ── Paramètres ───────────────────────────────────────────────────────────
-    IM_PATH     = r"C:\Users\Flora\Downloads\antsIm\antsIm\8.im.gz"  # ← modifier
+    IM_PATH     = r"C:\Users\Flora\Downloads\antsIm\antsIm\8.im.gz" 
     VOLUME_SIZE = 32      # 32³ : rapide, N jusqu'à 40
-    N_VALUES    = [10, 20, 30, 40]
+    N_VALUES    = [10, 20, 30, 40,50]  # ordres de reconstruction à tester
     THRESHOLD_K = 2.0     # seuil binarisation pour DICE : mean + k*std
 
     ALPHA_CONFIGS = {
@@ -420,6 +528,25 @@ if __name__ == "__main__":
     # ── Courbes comparatives ──────────────────────────────────────────────────
     curves_path = out_dir / f"frcm3d_curves_{stem}_{ts}.png"
     plot_curves_multi_alpha(N_VALUES, results_by_alpha, out_path=curves_path)
+
+    # ── Figures progression N=10→50 ──────────────────────────────────────────
+    print("\nGénération figures progression N...")
+    plot_progression_slices(
+        vol, orig_bin, N_VALUES,
+        alpha_x=best_info['ax'],
+        alpha_y=best_info['ay'],
+        alpha_z=best_info['az'],
+        out_path=out_dir / f"frcm3d_progression_slices_{stem}_{ts}.png"
+    )
+    plot_progression_voxel(
+        vol, orig_bin, N_VALUES,
+        alpha_x=best_info['ax'],
+        alpha_y=best_info['ay'],
+        alpha_z=best_info['az'],
+        threshold_k=THRESHOLD_K,
+        out_path=out_dir / f"frcm3d_progression_voxel_{stem}_{ts}.png",
+        max_voxels=50000
+    )
 
     # ── Tableau récapitulatif ─────────────────────────────────────────────────
     print("=" * 65)

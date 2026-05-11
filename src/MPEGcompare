@@ -203,13 +203,13 @@ print(f"Courbe PSNR sauvegardée : {psnr_path}")
 n_target = 20
 n_images = len(all_results)
 
-fig, axes = plt.subplots(n_images, 2, figsize=(8, 3 * n_images))
+fig, axes = plt.subplots(2, n_images, figsize=(3 * n_images, 6))
 
 # Garantir que axes est toujours 2D même pour une seule image
 if n_images == 1:
-    axes = np.expand_dims(axes, axis=0)
+    axes = np.expand_dims(axes, axis=1)
 
-for row_idx, (name, data) in enumerate(all_results.items()):
+for col_idx, (name, data) in enumerate(all_results.items()):
     img = data["img"]
 
     # Trouver la reconstruction pour N = n_target
@@ -220,21 +220,21 @@ for row_idx, (name, data) in enumerate(all_results.items()):
             break
 
     # Colonne gauche : image originale
-    axes[row_idx, 0].imshow(img, cmap="gray")
-    axes[row_idx, 0].set_title(f"{name}\nOriginal", fontsize=8)
-    axes[row_idx, 0].axis("off")
+    axes[0, col_idx].imshow(img, cmap="gray")
+    axes[0, col_idx].set_title(f"{name}\nOriginal", fontsize=8)
+    axes[0, col_idx].axis("off")
 
     # Colonne droite : reconstruction
     if rec_target is not None:
-        axes[row_idx, 1].imshow(rec_target, cmap="gray")
-        axes[row_idx, 1].set_title(
+        axes[1, col_idx].imshow(rec_target, cmap="gray")
+        axes[1, col_idx].set_title(
             f"{name}\nN={n_target} | MSE={mse_target:.4f} | PSNR={psnr_target:.2f} dB",
             fontsize=8
         )
     else:
-        axes[row_idx, 1].text(0.5, 0.5, f"N={n_target} non calculé",
-                               ha='center', va='center', transform=axes[row_idx, 1].transAxes)
-    axes[row_idx, 1].axis("off")
+        axes[1, col_idx].text(0.5, 0.5, f"N={n_target} non calculé",
+                               ha='center', va='center', transform=axes[1, col_idx].transAxes)
+    axes[1, col_idx].axis("off")
 
 fig.suptitle(f"Reconstruction par moments de Chebyshev (N={n_target})", fontsize=12, y=1.01)
 fig.tight_layout(pad=1.0)
